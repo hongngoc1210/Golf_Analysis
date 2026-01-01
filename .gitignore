@@ -1,0 +1,16 @@
+__pycache__
+*.pyc
+*.pth
+*.bin
+*.csv
+*.json
+*examine*
+*.venv
+*.log
+*.idea
+*.env
+*venv
+**tvm/
+**datasets/
+**outputs/
+*.zip
