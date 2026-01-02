@@ -1,8 +1,3 @@
-Dưới đây là **file `README.md` hoàn chỉnh**, viết theo chuẩn **đồ án / thesis / research project**, phản ánh đúng toàn bộ pipeline bạn đã xây dựng (Stage 1 → Stage 2 → Explainability → LLM feedback).
-Bạn có thể **copy nguyên văn** vào `README.md`.
-
----
-
 # 🏌️ Golf Swing Quality Assessment with Neural Additive Models (NAM)
 
 ## 📌 Overview
