@@ -1,47 +1,38 @@
-"""
-Neural Additive Model (NAM) Implementation
-Score = β₀ + Σ fᵢ(xᵢ)
-
-Mỗi feature có 1 NN riêng → Explainable
-"""
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 class FeatureNN(nn.Module):
     """
-    Neural Network cho 1 feature duy nhất
-    Input: xᵢ (scalar)
-    Output: fᵢ(xᵢ) (scalar contribution)
+    Neural network for a single feature.
+    Input : (batch, 1)
+    Output: (batch, 1) → logit contribution
     """
-    def __init__(self, hidden_units=[64, 32], dropout=0.1):
+    def __init__(self, hidden_units=(64, 32), dropout=0.1):
         super().__init__()
-        
+
         layers = []
-        in_dim = 1  # Input là 1 feature scalar
-        
-        for hidden_dim in hidden_units:
-            layers.append(nn.Linear(in_dim, hidden_dim))
+        in_dim = 1
+
+        for h in hidden_units:
+            layers.append(nn.Linear(in_dim, h))
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(dropout))
-            in_dim = hidden_dim
-        
-        # Output layer: contribution của feature này
-        layers.append(nn.Linear(in_dim, 1))
-        
-        self.network = nn.Sequential(*layers)
-        
-    def forward(self, x):
-        """
-        x: (batch_size, 1) - giá trị của 1 feature
-        output: (batch_size, 1) - contribution
-        """
-        return self.network(x)
+            in_dim = h
 
-class NAM(nn.Module):
-    def __init__(self, num_features=17, hidden_units=[64, 32], dropout=0.1):
+        layers.append(nn.Linear(in_dim, 1))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+class NAMClassifier(nn.Module):
+    """
+    Neural Additive Model for Binary Classification
+    logit = bias + sum_i f_i(x_i)
+    """
+    def __init__(self, num_features, hidden_units=(64, 32), dropout=0.1):
         super().__init__()
+
         self.num_features = num_features
 
         self.feature_nets = nn.ModuleList([
@@ -49,74 +40,75 @@ class NAM(nn.Module):
             for _ in range(num_features)
         ])
 
-        # Bias scalar (an toàn số học)
-        self.bias = nn.Parameter(torch.tensor(0.0))
+        # Global bias (logit space)
+        self.bias = nn.Parameter(torch.zeros(1))
 
-    def forward(self, x, return_contributions=False, clamp_output=False):
-        contributions = []
+    def forward(self, x, return_contributions=False):
+        """
+        Args:
+            x: (batch, num_features)
+        Returns:
+            logits: (batch,)
+            probs : (batch,)
+            contributions (optional): (batch, num_features)
+        """
+        contribs = []
 
         for i in range(self.num_features):
-            x_i = x[:, i:i+1]
-            contrib = self.feature_nets[i](x_i)
-            contributions.append(contrib)
+            xi = x[:, i:i+1]
+            ci = self.feature_nets[i](xi)
+            contribs.append(ci)
 
-        contributions = torch.cat(contributions, dim=1)
-        score = self.bias + contributions.sum(dim=1)
-
-        # ❗ Clamp CHỈ khi inference
-        if clamp_output:
-            score = torch.clamp(score, 0.0, 10.0)
+        contributions = torch.cat(contribs, dim=1)
+        logits = self.bias + contributions.sum(dim=1)
+        probs = torch.sigmoid(logits)
 
         if return_contributions:
-            return score, contributions
-        return score
-    
-    def get_feature_contributions(self, x):
-        """
-        Lấy contributions của từng feature (dùng cho XAI)
-        
-        Returns:
-            dict: {feature_name: contribution_value}
-        """
-        with torch.no_grad():
-            _, contributions = self.forward(x, return_contributions=True)
-            return contributions.cpu().numpy()
+            return logits, probs, contributions
 
-class NAMLoss(nn.Module):
-    def __init__(self, l2_lambda=1e-4, output_lambda=1e-3):
+        return logits, probs
+
+class NAMBinaryLoss(nn.Module):
+    """
+    Binary loss for NAM:
+    L = BCEWithLogits + λ1 * L2(weights) + λ2 * mean(contrib^2)
+    """
+    def __init__(self, l2_lambda=1e-4, contrib_lambda=1e-3):
         super().__init__()
+
+        self.bce = nn.BCEWithLogitsLoss()
         self.l2_lambda = l2_lambda
-        self.output_lambda = output_lambda
-        self.mse = nn.MSELoss()
+        self.contrib_lambda = contrib_lambda
 
-    def forward(self, predictions, targets, model, contributions=None):
+    def forward(self, logits, targets, model, contributions=None):
         """
-        predictions: (batch,)
-        targets: (batch,)
-        contributions: (batch, num_features)
+        Args:
+            logits: (batch,)
+            targets: (batch,) ∈ {0,1}
+            model: NAMClassifier
+            contributions: (batch, num_features)
         """
+        targets = targets.float()
 
-        # 1. MSE
-        mse_loss = self.mse(predictions, targets)
+        bce_loss = self.bce(logits, targets)
 
-        # 2. L2 regularization (KHÔNG áp lên bias)
-        l2_loss = 0.0
+        l2_loss = torch.tensor(0.0, device=logits.device)
+
         for name, param in model.named_parameters():
-            if "bias" not in name:
+            if param.requires_grad and "bias" not in name:
                 l2_loss += torch.sum(param ** 2)
+
         l2_loss = self.l2_lambda * l2_loss
-
-        # 3. Output regularization (trên batch thật)
         if contributions is not None:
-            output_reg = self.output_lambda * torch.mean(contributions ** 2)
+            contrib_reg = self.contrib_lambda * torch.mean(contributions ** 2)
         else:
-            output_reg = torch.tensor(0.0, device=predictions.device)
+            contrib_reg = torch.tensor(0.0, device=logits.device)
 
-        total_loss = mse_loss + l2_loss + output_reg
+        total_loss = bce_loss + l2_loss + contrib_reg
 
         return {
             "total": total_loss,
-            "mse": mse_loss,
+            "bce": bce_loss,
             "l2": l2_loss,
-            "output_reg": output_reg
+            "contrib_reg": contrib_reg
         }

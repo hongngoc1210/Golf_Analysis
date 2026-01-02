@@ -1,25 +1,27 @@
 model:
-  num_features: 17
   hidden_units:
     - 64
     - 32
   dropout: 0.1
+
 
 training:
   batch_size: 32
   learning_rate: 0.001
   weight_decay: 0.00001
   num_epochs: 100
-  early_stopping_patience: 15
+  early_stopping_patience: 20
 
 
 loss:
   l2_lambda: 0.0001
-  output_lambda: 0.001
+  contrib_lambda: 0.001
+
 
 runtime:
   device: auto   # auto | cpu | cuda
 
+
 paths:
-  checkpoint_dir: outputs/models/checkpoints
-  best_model_path: outputs/models/best_model.pth
+  checkpoint_dir: outputs/models/nam_classifier/checkpoints
+  best_model_path: outputs/models/nam_classifier/best_model.pth

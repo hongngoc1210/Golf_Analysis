@@ -1,267 +1,287 @@
-# Golf Swing Analysis với NAM + XAI + LLM Feedback
-
-Hệ thống phân tích kỹ thuật swing golf sử dụng Neural Additive Models (NAM) kết hợp Explainable AI và LLM feedback.
-
-## 🎯 Tổng quan
-
-Pipeline hoàn chỉnh:
-```
-CaddieSet (70+ features) 
-    → Feature Engineering (17 features) 
-    → NAM Model (Score 0-10) 
-    → Band Classification (1-5) 
-    → XAI Explanations 
-    → LLM Feedback
-```
-
-## 📁 Cấu trúc Project
-
-```
-golf_nam_project/
-├── data/
-│   ├── raw/                    # Raw CaddieSet CSV
-│   ├── processed/              # Processed train/val/test
-│   └── feature_definitions.json
-├── models/
-│   └── nam/                    # Trained models
-├── src/
-│   ├── models/                 # NAM implementation
-│   ├── xai/                    # Explainability
-│   ├── llm/                    # LLM feedback
-│   └── utils/                  # Utilities
-├── scripts/
-│   ├── train.py               # Training script     
-│   └── inference.py           # Inference pipeline
-└── outputs/                    # Analysis results
-```
-
-## 🚀 Quick Start
-
-### 1. Setup Environment
-
-```bash
-# Tạo cấu trúc project
-python setup_environment.py
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### 2. Chuẩn bị Data
-
-```bash
-# Đặt file caddieset.csv vào data/raw/
-cp /path/to/caddieset.csv data/raw/
-
-# Preprocess data
-preprocessing.ipynb
-```
-
-Output: `data/processed/` sẽ có train.csv, val.csv, test.csv
-
-### 3. Train Model
-
-```bash
-python train.py
-```
-
-Model tốt nhất được lưu tại: `outputs/models/nam/best_model.pth`
-
-### 4. Run Inference
-
-```bash
-python inference.py
-```
-
-## 📊 17 Features và Events Mapping
-
-| Feature | Event | Ý nghĩa |
-|---------|-------|---------|
-| spine_tilt | Address | Góc nghiêng cột sống ban đầu |
-| stance_width | Address | Độ rộng stance |
-| hip_shoulder_separation | Top | Độ tách vai-hông ở top |
-| hip_rotation_top | Top | Xoay hông ở top backswing |
-| arm_plane_mid | Mid-downswing | Mặt phẳng cánh tay |
-| hip_rotation_mid | Mid-downswing | Xoay hông giữa downswing |
-| spine_angle_impact | Impact | Góc cột sống tại impact |
-| hip_rotation_impact | Impact | Xoay hông tại impact |
-| head_motion_impact | Impact | Chuyển động đầu |
-| shaft_lean_impact | Impact | Độ nghiêng shaft |
-| spine_angle_release | Release | Góc cột sống ở release |
-| arm_extension_release | Release | Duỗi tay |
-| balance_finish | Finish | Cân bằng ở finish |
-| hip_angle_finish | Finish | Góc hông ở finish |
-| ... | ... | ... |
-
-## 🧠 NAM Model Architecture
-
-```python
-NAM(
-  num_features=17,
-  hidden_units=[64, 32],
-  dropout=0.1
-)
-
-# Score = β₀ + Σ fᵢ(xᵢ)
-# Mỗi feature có 1 FeatureNN riêng
-```
-
-**Ưu điểm:**
-- ✅ Explainable: Contribution từng feature rõ ràng
-- ✅ Additivity: Score = tổng các contributions
-- ✅ Non-linear: NN học non-linear patterns
-
-## 🎯 Band Definitions
-
-| Band | Score Range | Label |
-|------|-------------|-------|
-| 1 | 0-2 | Rất nhiều lỗi kỹ thuật |
-| 2 | 2-4 | Kỹ thuật yếu, thiếu ổn định |
-| 3 | 4-6 | Trung bình |
-| 4 | 6-8 | Tốt, còn vài lỗi nhỏ |
-| 5 | 8-10 | Gần chuẩn huấn luyện |
-
-## 🔍 XAI Output Example
-
-```json
-{
-  "score": 6.8,
-  "band": 4,
-  "band_label": "Tốt, còn vài lỗi nhỏ",
-  "feature_contributions": {
-    "spine_angle_impact": -1.2,
-    "hip_shoulder_separation": 0.6,
-    "balance_finish": 0.8
-  },
-  "phase_analysis": {
-    "Impact": {
-      "total_contribution": -1.6,
-      "issues": ["spine_angle", "head_motion"]
-    },
-    "Finish": {
-      "total_contribution": 0.8,
-      "strengths": ["balance"]
-    }
-  }
-}
-```
-
-## 💬 LLM Feedback
-
-Sử dụng Claude API để generate feedback:
-
-```python
-from src.llm.feedback_generator import LLMFeedbackGenerator
-
-generator = LLMFeedbackGenerator(api_key="your-api-key")
-feedback = generator.generate_feedback(explanation, phase_analysis, issues)
-```
-
-**Output Example:**
-```markdown
-# Golf Swing Analysis Report
-
-## Overall Assessment
-Your swing scored 6.8/10, placing you in Band 4 (Tốt, còn vài lỗi nhỏ).
-
-## Your Strengths 💪
-- Balance at finish: +0.8
-- Hip-shoulder separation: +0.6
-
-## Areas for Improvement 🎯
-1. Spine angle at impact: -1.2
-   - Excessive backward lean reduces consistency
-   - Drill: Practice impact bag with spine angle check
-
-2. Head motion at impact: -0.4
-   - Too much head movement affects accuracy
-   - Drill: "Head against wall" drill
-...
-```
-
-## 📈 Evaluation Metrics
-
-### Regression Metrics
-- MAE (Mean Absolute Error)
-- RMSE (Root Mean Squared Error)
-- R² Score
-
-### Band Metrics
-- Band Accuracy
-- Within-1-Band Accuracy
-- Per-band Precision/Recall/F1
-
-## 🛠️ Advanced Usage
-
-### Custom Feature Engineering
-
-```python
-from src.data.preprocessing import CaddieSetPreprocessor
-
-preprocessor = CaddieSetPreprocessor()
-# Modify feature extraction
-features = preprocessor.extract_17_features(df)
-```
-
-### Model Configuration
-
-```python
-from src.models.nam import NAMConfig
-
-config = NAMConfig()
-config.hidden_units = [128, 64, 32]
-config.learning_rate = 5e-4
-config.batch_size = 64
-```
-
-### Batch Analysis
-
-```python
-from scripts.inference import GolfSwingAnalyzer
-
-analyzer = GolfSwingAnalyzer()
-results = analyzer.analyze_batch(test_features_df)
-```
-
-## 📚 References
-
-1. **Neural Additive Models**: Agarwal et al., "Neural Additive Models: Interpretable Machine Learning with Neural Nets"
-2. **CaddieSet**: Golf swing biomechanics dataset with MediaPipe features
-3. **Claude API**: Anthropic's language model for feedback generation
-
-## ⚙️ Requirements
-
-```
-torch>=2.0.0
-numpy>=1.24.0
-pandas>=2.0.0
-scikit-learn>=1.3.0
-matplotlib>=3.7.0
-seaborn>=0.12.0
-anthropic>=0.18.0
-```
-
-## 🤝 Contributing
-
-Contributions welcome! Areas for improvement:
-- [ ] Additional feature engineering
-- [ ] Multi-task learning (distance + accuracy)
-- [ ] Real-time video analysis integration
-- [ ] Mobile app deployment
-
-## 📝 License
-
-MIT License
-
-## 📧 Contact
-
-For questions or issues, please open a GitHub issue.
+Dưới đây là **file `README.md` hoàn chỉnh**, viết theo chuẩn **đồ án / thesis / research project**, phản ánh đúng toàn bộ pipeline bạn đã xây dựng (Stage 1 → Stage 2 → Explainability → LLM feedback).
+Bạn có thể **copy nguyên văn** vào `README.md`.
 
 ---
 
-**Note**: Để sử dụng LLM feedback, cần ANTHROPIC_API_KEY:
-```bash
-export ANTHROPIC_API_KEY="your-key-here"
+# 🏌️ Golf Swing Quality Assessment with Neural Additive Models (NAM)
+
+## 📌 Overview
+
+This project proposes an **end-to-end explainable machine learning pipeline** for **golf swing quality assessment**, combining:
+
+* **Stage 1**: Feature selection using tree-based models (LightGBM + SHAP)
+* **Stage 2**: Explainable **Neural Additive Model (NAM)** for **binary classification**
+* **XAI**: Feature-level contribution analysis
+* **LLM-based feedback generation** (Gemini / Gemma / Template fallback)
+
+The system not only predicts whether a golf swing is **GOOD** or **BAD**, but also explains *why* and provides **human-readable coaching feedback**.
+
+---
+
+## 🎯 Problem Definition
+
+* **Input**: Motion-derived golf swing features (angles, ratios, positions)
+* **Output**:
+
+  * Binary classification:
+
+    * `0` → Bad swing
+    * `1` → Good swing
+  * Feature contributions
+  * Personalized coaching feedback
+
+---
+
+## 🧠 Core Ideas
+
+1. **Interpretability-first modeling**
+   Each feature contributes independently via a small neural network:
+   [
+   \text{logit} = b + \sum_i f_i(x_i)
+   ]
+
+2. **Two-stage learning**
+
+   * Stage 1: Learn global feature importance
+   * Stage 2: Learn interpretable per-feature effects
+
+3. **Human-in-the-loop explainability**
+
+   * Model → Explainer → Reasoner → LLM → Feedback
+
+---
+
+## 🗂️ Project Structure
+
+```text
+DataStorm/
+├── datasets/
+│   ├── raw/
+│   └── processed/
+│       ├── train_stage2.csv
+│       ├── val_stage2.csv
+│       └── test_stage2.csv
+│
+├── src/
+│   ├── models/
+│   │   ├── nam.py                 # NAMClassifier + Loss
+│   │   └── trainer.py             # Training loop
+│   │
+│   ├── xai/
+│   │   └── explainer.py           # NAMExplainerClassification
+│   │
+│   ├── reasoning/
+│   │   └── technical_reasoner_classification.py
+│   │
+│   ├── llm/
+│   │   ├── llm_consumer.py        # Gemini / Gemma / Template
+│   │   └── prompts.py
+│   │
+│   └── utils/
+│       ├── load_config.py
+│       ├── metrics.py
+│       └── nam_export.py
+│
+├── outputs/
+│   ├── models/
+│   │   └── nam_classifier_stage2/
+│   │       ├── best_model.pth
+│   │       └── feature_list.json
+│   ├── inference/
+│   │   └── nam_predictions.json
+│   └── reports/
+│       └── nam_test_metrics.json
+│
+├── configs/
+│   └── nam_classifier.yaml
+│
+├── train.py
+├── inference.py
+├── evaluate_test.py
+├── generate_feedback.py
+└── README.md
 ```
 
-Hoặc hệ thống sẽ tự động fallback sang template-based feedback.
+---
+
+## ⚙️ Pipeline Description
+
+### 🔹 Stage 1 – Feature Selection (LightGBM)
+
+* Train a tree-based model on all available features
+* Use SHAP values to estimate global feature importance
+* Select **Top-N features**
+* Create `*_stage2.csv` datasets
+
+> Purpose: Reduce noise & stabilize NAM training
+
+---
+
+### 🔹 Stage 2 – NAM Binary Classification
+
+* Model: **Neural Additive Model**
+* Each feature has its own sub-network
+* Output:
+
+  * Logit
+  * Probability
+  * Per-feature contribution
+
+**Loss function**:
+[
+\mathcal{L} =
+\text{BCEWithLogits}
+
+* \lambda_1 \lVert \theta \rVert^2
+* \lambda_2 \mathbb{E}[f_i(x_i)^2]
+  ]
+
+---
+
+### 🔹 Evaluation Metrics
+
+* Accuracy
+* F1-score
+* ROC-AUC
+* Confusion Matrix
+
+Evaluation is performed strictly on **held-out test set**.
+
+---
+
+### 🔹 Explainability (XAI)
+
+`NAMExplainerClassification` produces:
+
+* Prediction (`GOOD` / `BAD`)
+* Probability
+* Top positive features
+* Top negative features
+* Full contribution list
+
+All outputs are **JSON-safe**.
+
+---
+
+### 🔹 Technical Reasoning Layer
+
+`TechnicalReasonerClassification` converts raw contributions into:
+
+* Key technical issues
+* Severity estimation
+* Strengths vs weaknesses
+* Structured reasoning schema for LLM
+
+This layer ensures:
+
+* No hallucination
+* Domain grounding
+* Stable feedback
+
+---
+
+### 🔹 LLM Feedback Generation
+
+Supported backends:
+
+* Gemini API
+* Gemma (via API)
+* Template fallback
+
+LLM receives **structured reasoning**, not raw numbers.
+
+Output:
+
+* Overall assessment
+* Technical explanation
+* Improvement guidance
+* Drills
+* Encouragement (Vietnamese)
+
+---
+
+## 🚀 How to Run
+
+### 1️⃣ Train Stage 2 NAM
+
+```bash
+python train.py --config configs/nam_classifier.yaml
+```
+
+---
+
+### 2️⃣ Evaluate on Test Set
+
+```bash
+python evaluate_test.py \
+  --config configs/nam_classifier.yaml \
+  --model_dir outputs/models/nam_classifier_stage2 \
+  --test_data datasets/processed/test_stage2.csv
+```
+
+---
+
+### 3️⃣ Run Inference
+
+```bash
+python inference.py \
+  --config configs/nam_classifier.yaml \
+  --data datasets/processed/test_stage2.csv \
+  --model outputs/models/nam_classifier_stage2/best_model.pth \
+  --output outputs/inference/nam_predictions.json
+```
+
+---
+
+### 4️⃣ Generate Technical Reasoning
+
+```bash
+python technical_reasoner_classification.py \
+  --input outputs/inference/nam_predictions.json \
+  --output outputs/inference/technical_reasoning.json
+```
+
+---
+
+### 5️⃣ Generate LLM Feedback
+
+```bash
+python generate_feedback.py \
+  --input outputs/inference/technical_reasoning.json
+```
+
+---
+
+## 📊 Key Advantages
+
+* ✅ Fully explainable architecture
+* ✅ Feature-level interpretability
+* ✅ Stable reasoning before LLM
+* ✅ Suitable for academic research
+* ✅ Ready for real coaching systems
+
+---
+
+## 📚 Intended Use
+
+* Master / Bachelor thesis
+* Sports analytics research
+* Explainable AI case study
+* Intelligent coaching systems
+
+---
+
+## 📌 Notes
+
+* The project is designed to be **model-agnostic at Stage 1**
+* NAM architecture is extensible to:
+
+  * Regression
+  * Multi-class classification
+* LLM backend can be swapped without retraining
+
+---
+
+## ✍️ Author
+
+Developed as part of an academic research project on **Explainable AI for Sports Performance Analysis**.

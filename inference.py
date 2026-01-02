@@ -1,230 +1,166 @@
-"""
-InferenceEngine v1.0
---------------------
-Golf Swing Analysis Pipeline
-
-Components:
-- NAM (Prediction)
-- XAI (Feature & Phase Attribution)
-- Symbolic Technical Reasoner
-- LLM Feedback Generator (Gemini / Template)
-
-Design goals:
-- Reproducible (thesis-ready)
-- Cost-safe (paid LLM API)
-- Robust (LLM never breaks ML inference)
-
-Author: DataStorm
-"""
-
-# ============================================================
-# ENV & STANDARD IMPORTS
-# ============================================================
-
 import os
 import json
-import time
-from pathlib import Path
-from typing import Dict, Any
-
-import numpy as np
-import pandas as pd
 import torch
-import matplotlib.pyplot as plt
-from dotenv import load_dotenv
+import argparse
+import pandas as pd
+import numpy as np
 
-load_dotenv()
-
-from src.models.nam import NAM
-from src.xai.explainer import NAMExplainer
-from src.llm.technical_reasoner import build_technical_insights
-from src.llm.llm import get_feedback_generator
-
-def to_json_safe(obj: Any):
-    """
-    Convert numpy / torch objects to JSON-serializable types.
-    Ensures reproducibility and clean artifact storage.
-    """
-    import numpy as np
-    import torch
-
-    if isinstance(obj, dict):
-        return {k: to_json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [to_json_safe(v) for v in obj]
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, (np.float32, np.float64)):
-        return float(obj)
-    if isinstance(obj, (np.int32, np.int64)):
-        return int(obj)
-    if torch.is_tensor(obj):
-        return obj.detach().cpu().tolist()
-
-    return obj
+from src.models.nam import NAMClassifier
+from src.xai.explainer import NAMExplainerClassification
+from src.utils.load_config import load_config, resolve_device
 
 
-class InferenceEngine:
-    """
-    Thesis-ready inference engine for golf swing analysis.
-    """
+# ============================================================
+# Inference Engine
+# ============================================================
 
-    def __init__(
-        self,
-        model_path: str,
-        feature_def_path: str,
-        device: str | None = None,
-        use_llm: bool = True,
-    ):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.use_llm = use_llm
+class NAMInferenceEngine:
+    def __init__(self, config, model_path):
+        self.config = config
+        self.device = resolve_device(config.get("runtime", {}))
+        self.model_path = model_path
 
-        with open(feature_def_path, "r", encoding="utf-8") as f:
-            defs = json.load(f)
+        self.model = None
+        self.explainer = None
+        self.feature_names = None
 
-        self.feature_defs = defs["features"]
-        self.feature_names = [f["name"] for f in self.feature_defs]
+    # --------------------------------------------------------
+    # Load model
+    # --------------------------------------------------------
 
-        self.model = NAM(num_features=len(self.feature_names))
-        checkpoint = torch.load(model_path, map_location=self.device)
-        self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.model.to(self.device)
+    def load_model(self, num_features):
+        self.model = NAMClassifier(
+            num_features=num_features,
+            hidden_units=self.config["model"]["hidden_units"],
+            dropout=self.config["model"]["dropout"]
+        ).to(self.device)
+
+        state = torch.load(self.model_path, map_location=self.device)
+
+        print("🧪 Keys in checkpoint (sample):")
+        for k in list(state.keys())[:10]:
+            print(k)
+
+        feature_net_keys = [
+            k for k in state.keys() if k.startswith("feature_nets")
+        ]
+
+        max_idx = max(
+            int(k.split(".")[1]) for k in feature_net_keys
+        )
+        print(f"🧪 Checkpoint has {max_idx + 1} feature nets")
+
+        self.model.load_state_dict(state)
         self.model.eval()
 
-        print(f"✅ NAM model loaded: {model_path}")
+        print(f"✅ Model loaded from {self.model_path}")
 
-        self.explainer = NAMExplainer(model=self.model)
-        print("✅ XAI explainer initialized")
+    # --------------------------------------------------------
+    # Run inference on dataframe
+    # --------------------------------------------------------
+    
+    def load_feature_list(self, path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
 
-        self.feedback_generator = get_feedback_generator()
 
-        self.llm_backend = (
-            "gemini"
-            if getattr(self.feedback_generator, "enabled", False)
-            else "template"
+    def run(self, df, threshold=0.5, save_path=None):
+        feature_list_path = "outputs/models/nam_classifier_features.json"
+        self.feature_names = self.load_feature_list(feature_list_path)
+
+        # Ensure column alignment
+        missing = set(self.feature_names) - set(df.columns)
+        if missing:
+            raise RuntimeError(f"❌ Missing features in inference data: {missing}")
+
+        df = df[self.feature_names]  # reorder + filter
+
+        self.load_model(num_features=len(self.feature_names))
+
+        self.explainer = NAMExplainerClassification(
+            model=self.model,
+            feature_names=self.feature_names
         )
 
-        print(f"✅ Feedback backend: {self.llm_backend}")
-        self.llm_sleep_sec = float(os.getenv("LLM_SLEEP_SEC", 10.0))
-
-
-    def analyze_single(self, row: pd.Series) -> Dict[str, Any]:
-        """
-        Analyze a single golf swing sample.
-        """
-
-        x = row[self.feature_names].values.astype(float)
-
-        analysis = self.explainer.explain(x)
-
-        structured_reasoning = {
-            "score": analysis["score"],
-            "band": analysis["band"],
-            "band_label": analysis["band_label"],
-            "priority_phase": self._get_priority_phase(
-                analysis["phase_analysis"]
-            ),
-            "key_issues": analysis["key_issues"],
-            "strengths": analysis["explanation"]["top_positive_features"],
-            "phase_analysis": analysis["phase_analysis"],
-        }
-
-        structured_reasoning = to_json_safe(structured_reasoning)
-        feedback = None
-
-        if self.use_llm:
-            try:
-                feedback = self.feedback_generator.generate(structured_reasoning)
-            except Exception as e:
-                print("⚠️ LLM generation failed:", e)
-                feedback = None
-
-        return {
-            "analysis": to_json_safe(analysis),
-            "feedback": feedback,
-            "metadata": {
-                "llm_backend": self.llm_backend,
-                "llm_model": os.getenv("GEMINI_MODEL", "n/a"),
-            },
-        }
-
-    def analyze_batch(
-        self,
-        df: pd.DataFrame,
-        n_samples: int = 10,
-        output_dir: str = "outputs/reports",
-    ):
         results = []
 
-        for idx in range(min(n_samples, len(df))):
-            print(f"\n🏌️ ANALYZING SWING {idx + 1}/{n_samples}")
+        for idx in range(len(df)):
+            x = df.iloc[idx].values.astype(np.float32)
 
-            result = self.analyze_single(df.iloc[idx])
-            results.append(result)
+            explanation = self.explainer.explain(
+                x, threshold=threshold
+            )
 
-            if self.use_llm and self.llm_backend == "gemini":
-                time.sleep(self.llm_sleep_sec)
+            results.append({
+                "index": int(idx),
+                **explanation
+            })
 
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+            if (idx + 1) % 10 == 0:
+                print(f"🔍 Processed {idx + 1}/{len(df)} samples")
 
-        output_path = output_dir / "batch_analysis.json"
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            with open(save_path, "w", encoding="utf-8") as f:
+                json.dump(results, f, indent=2, ensure_ascii=False)
+            print(f"💾 Inference results saved to {save_path}")
 
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
+        return results
 
-        print(f"\n💾 Results saved to {output_path}")
 
-    @staticmethod
-    def _get_priority_phase(phase_analysis: Dict):
-        """
-        Identify the most problematic swing phase.
-        """
-        if not phase_analysis:
-            return None
+# ============================================================
+# Entry point
+# ============================================================
 
-        phase, stats = min(
-            phase_analysis.items(),
-            key=lambda x: x[1]["total_contribution"],
-        )
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/nam_config.yaml"
+    )
+    parser.add_argument(
+        "--data",
+        type=str,
+        default="datasets/processed/test_stage2.csv"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="outputs/models/nam_classifier/best_model.pth"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="outputs/inference/nam_predictions.json"
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.5
+    )
+    return parser.parse_args()
 
-        return {
-            "phase": phase,
-            "total_contribution": float(stats["total_contribution"]),
-        }
-
-    @staticmethod
-    def plot_contributions(analysis: Dict, save_path: str):
-        contribs = analysis["analysis"]["explanation"]["feature_contributions"]
-
-        features = list(contribs.keys())
-        values = list(contribs.values())
-        colors = ["green" if v > 0 else "red" for v in values]
-
-        plt.figure(figsize=(10, 6))
-        plt.barh(features, values, color=colors)
-        plt.axvline(0, linestyle="--", color="black")
-        plt.title("Feature Contributions")
-        plt.tight_layout()
-        plt.savefig(save_path)
-        plt.close()
 
 def main():
-    print("🏌️ GOLF SWING ANALYSIS – INFERENCE ENGINE v1.0")
+    args = parse_args()
+    config = load_config(args.config)
 
-    engine = InferenceEngine(
-        model_path="outputs/models/best_model.pth",
-        feature_def_path="datasets/feature_definitions.json",
-        use_llm=True,
+    df = pd.read_csv(args.data)
+
+    # Drop label if accidentally included
+    if "label" in df.columns:
+        df = df.drop(columns=["label"])
+
+    engine = NAMInferenceEngine(
+        config=config,
+        model_path=args.model
     )
 
-    test_df = pd.read_csv("datasets/processed/test.csv")
-    test_df = test_df.reset_index(drop=True)
-
-    engine.analyze_batch(
-        test_df,
-        n_samples=1,
-        output_dir="outputs/reports",
+    engine.run(
+        df=df,
+        threshold=args.threshold,
+        save_path=args.output
     )
 
 
